@@ -1,0 +1,78 @@
+# Partition and Format
+mkfs.fat -F32 /dev/nvme0n1p1  # Format EFI partition
+mkfs.btrfs -L root /dev/nvme0n1p2  # Format Btrfs root partition
+# DO NOT format /dev/nvme0n1p3 as it contains existing data
+
+# Mount the Btrfs root partition
+mount -o subvol=@,rw,noatime,compress=zstd,ssd,space_cache=v2 /dev/nvme0n1p2 /mnt
+
+# Create Btrfs subvolumes
+btrfs subvolume create /mnt/@
+btrfs subvolume create /mnt/@log
+
+# Remount the root subvolume
+umount /mnt
+mount -o subvol=@,rw,noatime,compress=zstd,ssd,space_cache=v2 /dev/nvme0n1p2 /mnt
+
+# Mount the other subvolumes and partitions
+mkdir -p /mnt/home /mnt/var/log /mnt/boot/efi
+mount /dev/nvme0n1p3 /mnt/home  # Mount existing /home partition
+mount -o subvol=@log /dev/nvme0n1p2 /mnt/var/log
+mount /dev/nvme0n1p1 /mnt/boot/efi  # Mount EFI partition
+
+# Create and Enable Swapfile
+truncate -s 0 /mnt/swapfile
+chattr +C /mnt/swapfile  # Disable CoW
+dd if=/dev/zero of=/mnt/swapfile bs=1M count=16384  # 16 GB size
+chmod 600 /mnt/swapfile
+mkswap /mnt/swapfile
+swapon /mnt/swapfile
+
+# Install Void Linux
+xbps-install -Sy -R https://alpha.de.repo.voidlinux.org/current -r /mnt base-system grub
+
+# Generate Fstab
+genfstab -U -p /mnt > /mnt/etc/fstab
+
+# Chroot into the New System
+chroot /mnt /bin/bash
+
+# Configure Grub
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=void
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Set Hostname and Network Configuration
+echo "Linux" > /etc/hostname
+# Configure network in /etc/rc.conf (if needed)
+
+# Create User Account
+useradd -m -g users -G wheel -s /bin/bash asifakonjee
+passwd asifakonjee
+
+# Calculate Resume Offset
+resume_offset=$(filefrag -v /swapfile | awk '/ 0:/ {print $4}' | sed 's/\..*//')
+
+# Get the UUID of the Btrfs root partition
+uuid=$(blkid -s UUID -o value /dev/nvme0n1p2)
+
+# Update GRUB configuration
+sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"resume=UUID=$uuid resume_offset=$resume_offset loglevel=3\"|" /etc/default/grub
+
+# Regenerate the GRUB configuration
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Exit Chroot
+exit
+
+# Ensure fstab is correctly configured
+cat << EOF >> /mnt/etc/fstab
+/dev/nvme0n1p1    /boot/efi    vfat    defaults        0       2
+/dev/nvme0n1p2    /             btrfs   subvol=@,rw,noatime,compress=zstd,ssd,space_cache=v2  0 1
+/dev/nvme0n1p2    /var/log      btrfs   subvol=@log,rw,noatime,compress=zstd,ssd,space_cache=v2  0 2
+/dev/nvme0n1p3    /home         btrfs   rw,noatime,compress=zstd,ssd,space_cache=v2  0 2
+/swapfile         none          swap    sw              0       0
+EOF
+
+# Unmount and Reboot
+umount -R /mnt
+reboot
