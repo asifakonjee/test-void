@@ -1,0 +1,214 @@
+# Step-by-Step Installation of Void Linux
+
+1. Boot from Void Linux Installation Media
+
+    Boot your system using the Void Linux installation media (USB/DVD).
+
+2. Prepare the Disk Partitions
+
+    Use cfdisk, gdisk, or another partitioning tool to partition your disk as follows:
+        EFI System Partition (ESP): /dev/nvme0n1p1 (Size: 512MB, Type: EFI System)
+        Root Partition: /dev/nvme0n1p2 (Type: Linux filesystem)
+        Home Partition: /dev/nvme0n1p3 (Type: Linux filesystem, contains existing data)
+
+3. Format Partitions
+
+    Format the ESP partition:
+
+    bash
+
+mkfs.fat -F32 /dev/nvme0n1p1
+
+Format the Root partition with Btrfs:
+
+bash
+
+    mkfs.btrfs -L root /dev/nvme0n1p2
+
+    Note: Do not format /dev/nvme0n1p3 as it contains existing data.
+
+4. Create Btrfs Subvolumes
+
+    Mount the Root partition:
+
+    bash
+
+mount /dev/nvme0n1p2 /mnt
+
+Create the subvolumes:
+
+bash
+
+btrfs subvolume create /mnt/@
+btrfs subvolume create /mnt/@log
+
+Unmount the Root partition:
+
+bash
+
+    umount /mnt
+
+5. Mount Partitions and Subvolumes
+
+    Mount the Root subvolume:
+
+    bash
+
+mount -o subvol=@,rw,noatime,compress=zstd,ssd,space_cache=v2 /dev/nvme0n1p2 /mnt
+
+Create necessary directories:
+
+bash
+
+mkdir -p /mnt/home /mnt/var/log /mnt/boot/efi
+
+Mount the Home partition:
+
+bash
+
+mount /dev/nvme0n1p3 /mnt/home
+
+Mount the /var/log subvolume:
+
+bash
+
+mount -o subvol=@log /dev/nvme0n1p2 /mnt/var/log
+
+Mount the EFI partition:
+
+bash
+
+    mount /dev/nvme0n1p1 /mnt/boot/efi
+
+6. Create and Enable Swap File
+
+    Create a swap file:
+
+    bash
+
+    truncate -s 0 /mnt/swapfile
+    chattr +C /mnt/swapfile  # Disable CoW
+    dd if=/dev/zero of=/mnt/swapfile bs=1M count=16384  # 16 GB size
+    chmod 600 /mnt/swapfile
+    mkswap /mnt/swapfile
+    swapon /mnt/swapfile
+
+7. Install Void Linux Base System and Required Packages
+
+    Initialize the XBPS keys and repositories:
+
+    bash
+
+    xbps-install -Sy -R https://alpha.de.repo.voidlinux.org/current -r /mnt base-system btrfs-progs void-repo-nonfree intel-ucode
+
+8. Generate fstab
+
+    Generate the fstab file:
+
+    bash
+
+    genfstab -U -p /mnt > /mnt/etc/fstab
+
+9. Chroot into the New System
+
+    Chroot into the new system:
+
+    bash
+
+    chroot /mnt /bin/bash
+
+10. Configure the System Inside Chroot
+
+    Set the hostname:
+
+    bash
+
+echo "Linux" > /etc/hostname
+
+Create a user account:
+
+bash
+
+useradd -m -g users -G wheel -s /bin/bash asifakonjee
+
+Set the password for the user:
+
+bash
+
+    passwd asifakonjee
+
+11. Install and Configure GRUB
+
+    Install GRUB:
+
+    bash
+
+    grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=void
+    grub-mkconfig -o /boot/grub/grub.cfg
+
+12. Calculate Resume Offset for Swap
+
+    Calculate the resume offset for the swap file:
+
+    bash
+
+resume_offset=$(filefrag -v /swapfile | awk '/ 0:/ {print $4}' | sed 's/\..*//')
+
+Get the UUID of the Btrfs root partition:
+
+bash
+
+    uuid=$(blkid -s UUID -o value /dev/nvme0n1p2)
+
+13. Update GRUB Configuration
+
+    Edit the GRUB configuration:
+
+    bash
+
+sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"resume=UUID=$uuid resume_offset=$resume_offset loglevel=3\"|" /etc/default/grub
+
+Regenerate the GRUB configuration:
+
+bash
+
+    grub-mkconfig -o /boot/grub/grub.cfg
+
+14. Ensure fstab is Correctly Configured
+
+    Edit /etc/fstab to include the necessary entries:
+
+    bash
+
+    cat << EOF >> /etc/fstab
+    /dev/nvme0n1p1    /boot/efi    vfat    defaults        0       2
+    /dev/nvme0n1p2    /             btrfs   subvol=@,rw,noatime,compress=zstd,ssd,space_cache=v2  0 1
+    /dev/nvme0n1p2    /var/log      btrfs   subvol=@log,rw,noatime,compress=zstd,ssd,space_cache=v2  0 2
+    /dev/nvme0n1p3    /home         btrfs   rw,noatime,compress=zstd,ssd,space_cache=v2  0 2
+    /swapfile         none          swap    sw              0       0
+    EOF
+
+15. Exit Chroot and Reboot
+
+    Exit chroot:
+
+    bash
+
+exit
+
+Unmount all partitions:
+
+bash
+
+umount -R /mnt
+
+Reboot the system:
+
+bash
+
+    reboot
+
+Post-Installation
+
+    After the reboot, you should have a working Void Linux installation with Btrfs, a separate home partition, a swap file, and a /var/log subvolume.
+    Log in with the user asifakonjee and the password you set during the installation process.
