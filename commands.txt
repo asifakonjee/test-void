@@ -30,7 +30,7 @@ swapon /mnt/swapfile
 
 
 # Install Void Linux
-xbps-install -Sy -R https://alpha.de.repo.voidlinux.org/current -r /mnt base-system grub
+xbps-install -Sy -R https://alpha.de.repo.voidlinux.org/current -r /mnt base-system grub NetworkManager
 
 # Generate Fstab
 genfstab -U -p /mnt > /mnt/etc/fstab
