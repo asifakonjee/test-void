@@ -22,11 +22,12 @@ mount /dev/nvme0n1p1 /mnt/boot/efi  # Mount EFI partition
 
 # Create and Enable Swapfile
 truncate -s 0 /mnt/swapfile
-chattr +C /mnt/swapfile  # Disable CoW
-dd if=/dev/zero of=/mnt/swapfile bs=1M count=16384  # 16 GB size
+chattr +C /mnt/swapfile  # Disable CoW for the swap file
+dd if=/dev/zero of=/mnt/swapfile bs=1M count=12288  # 12GB size
 chmod 600 /mnt/swapfile
 mkswap /mnt/swapfile
 swapon /mnt/swapfile
+
 
 # Install Void Linux
 xbps-install -Sy -R https://alpha.de.repo.voidlinux.org/current -r /mnt base-system grub
