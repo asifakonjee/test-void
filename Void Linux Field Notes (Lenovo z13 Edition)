@@ -1,0 +1,170 @@
+# Void Linux Field Notes (Lenovo z13 Edition)
+This contains the notes from my installation of Void Linux onto my Lenovo z13 (gen1) laptop[^1] with the following specs:
+* AMD Ryzen™ 7 PRO 6860Z
+* 13.3" 2.8K (2880 x 1800) OLED
+* 32 GB LPDDR5 6400MHz
+* Integrated AMD Radeon™ 680M Graphic
+* WiFi 6E 802.11AX
+* WWAN Fibocom L860-GL-16 4G CAT16
+[^1]: https://download.lenovo.com/pccbbs/mobiles_pdf/z13_z16_gen1_hmm_en.pdf
+
+__Notes__ about this installation:
+* ZFS on Root
+* ZFSBootMenu
+* zram swap + s0 sleep _(no hibernation - i never use it)_
+* Sanoid + httm for ZFS Time Machine
+* S6/66 for service management
+* Zen kernel
+
+NOTE: Most of this installation is _opinionated_ and you can freel free to adapt it to your needs.
+
+## Preparation (pre-bootstrap)
+```bash
+# Enter the bash shell
+bash
+
+# Set the device we will use (i.e. /dev/nvme0n1)
+DEVICE=/dev/nvme0n1
+
+xbps-install -Su xbps
+
+# Clear the disk
+wipefs -a $DEVICE
+blkdiscard -f $DEVICE
+cfdisk $DEVICE
+
+## Partition layout
+# +256MiB	EFI
+# --		Solaris root
+####
+
+# ROOTFS - zpool
+modprobe zfs
+zpool create -f -o ashift=12 \
+ -O compression=lz4 \
+ -O acltype=posixacl \
+ -O xattr=sa \
+ -O relatime=on \
+ -o autotrim=on \
+ -m none zroot "$DEVICE"p2
+ 
+zfs create -o mountpoint=none zroot/DATA
+zfs create -o mountpoint=none zroot/ROOT
+zfs create -o mountpoint=/ -o canmount=noauto zroot/ROOT/default
+
+zfs create -o mountpoint=/home zroot/DATA/home
+zfs create -o mountpoint=/root zroot/DATA/home/root
+
+zpool export zroot
+zpool import -d /dev/disk/by-id -R /mnt zroot -N
+
+zfs mount zroot/ROOT/default
+zpool set bootfs=zroot/ROOT/default zroot
+zpool set cachefile=/etc/zfs/zpool.cache zroot
+
+zfs mount -a
+mkdir -p /mnt/etc/zfs
+cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
+
+# EFI - vfat
+mkfs.vfat -F32 -n EFI "$DEVICE"p1
+mount -m -L EFI /mnt/boot/efi
+
+```
+## Bootstrap
+```bash
+XBPS_ARCH=x86_64-musl xbps-install \
+  -S -R https://mirrors.servercentral.com/voidlinux/current/musl \
+  -r /mnt base-system
+  
+zgenhostid -f 0x00bab10c
+cp /etc/hostid /mnt/etc
+```
+
+## Preconfigure
+```bash
+xchroot /mnt /bin/bash
+
+xbps-install -Sy zfs sanoid terminus-font void-repo-nonfree wireless_tools curl efibootmgr
+
+HOSTNAME=localhost
+TZ=UTC
+LOCAL_USER=dummy
+
+### User Account Setup
+# Create an entry for anyone in the wheel group and then add a new user to the system.
+echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/01_wheel && \
+useradd -m -g users -G wheel -s /bin/bash $LOCAL_USER
+usermod -aG video,audio,users,xbuilder $LOCAL_USER
+passwd $LOCAL_USER
+
+# Setup hostname
+sed -i 's/^#HOSTNAME=.*$/HOSTNAME="'$HOSTNAME'"/' /etc/rc.conf
+
+# Set timezone
+ln -sf /usr/share/zoneinfo/$TZ /etc/localtime
+hwclock --systohc
+
+# Setup locale
+sed -i 's/^#KEYMAP=.*$/KEYMAP="us"/' /etc/rc.conf
+sed -i 's/^#FONT=.*$/FONT="ter-132b"/' /etc/rc.conf
+echo -e 'export LANG=en_US.UTF-8\nexport LC_COLLATE=C' > /etc/locale.conf
+
+# Fonts
+ln -s /usr/share/fontconfig/conf.avail/70-no-bitmaps.conf /etc/fonts/conf.d/ && \
+xbps-reconfigure -f fontconfig
+
+# ZRAM - swap
+echo zram > /etc/modules-load.d/zram.conf
+
+## /etc/udev/rules.d/99-zram.rules
+ACTION=="add", KERNEL=="zram0", ATTR{comp_algorithm}="zstd", ATTR{disksize}="4G", RUN="/usr/bin/mkswap -U clear /dev/%k"
+```
+
+### fstab
+NOTE: There are some manual file manipulations here
+```bash
+# I manually wrote the file ... 
+
+## /etc/fstab
+/dev/nvme0n1p1		/boot/efi	vfat	fmask=0077,errors=remount-ro	0 0
+/dev/zram0		none		swap	defaults,pri=100		0 0
+tmpfs			/tmp		tmpfs	defaults,nosuid,nodev		0 0
+```
+
+### initram
+```bash
+## /etc/dracut.conf.d/local.conf
+hostonly=yes
+compress="lz4"
+nofsck="yes"
+early_microcode=yes
+show_modules=yes
+
+add_dracutmodules+=" zfs "
+omit_dracutmodules+=" btrfs resume "
+
+dracut -f --regenerate-all
+```
+
+### zfsbootmenu
+```bash
+DEVICE=/dev/nvme0n1
+
+zfs set org.zfsbootmenu:commandline="quiet loglevel=3" zroot/ROOT
+
+mkdir -p /boot/efi/EFI/ZBM
+curl -o /boot/efi/EFI/ZBM/VMLINUZ.EFI -L https://get.zfsbootmenu.org/efi
+efibootmgr -c -d $DEVICE -L "ZFSBootMenu" -l '\EFI\ZBM\VMLINUZ.EFI'
+
+exit
+```
+
+## Wrapping it up...
+```bash
+swapoff -a
+umount -R /mnt
+zpool export zroot
+
+reboot
+```
